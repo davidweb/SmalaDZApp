@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom global styles can go here */
+body {
+  /* Keep existing font/background styles in index.html, but you can add small overrides here if needed */
+}
