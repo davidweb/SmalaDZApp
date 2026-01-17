@@ -1,5 +1,5 @@
 
-import { createClient } from '@supabase/supabase-client';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.48.1';
 
 /**
  * In the execution environment, these variables are typically injected via process.env.
@@ -17,7 +17,13 @@ const initSupabase = () => {
     // though functionality will be limited until real keys are provided.
     return {
       from: () => ({
-        select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: null, error: null }) }) }),
+        select: () => ({ 
+          eq: () => ({ 
+            single: () => Promise.resolve({ data: null, error: null }),
+            select: () => ({ single: () => Promise.resolve({ data: null, error: null }) })
+          }),
+          select: () => ({ single: () => Promise.resolve({ data: null, error: null }) })
+        }),
         insert: () => ({ select: () => ({ single: () => Promise.resolve({ data: null, error: null }) }) }),
         update: () => ({ eq: () => Promise.resolve({ data: null, error: null }) }),
         delete: () => ({ eq: () => Promise.resolve({ data: null, error: null }) }),
