@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Famille DZ en Or",
+  "description": "A real-time multiplayer Family Feud adaptation for Algerian culture, optimized for TikTok live streaming with admin controls, team duels, and automated scoring.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
