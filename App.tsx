@@ -31,37 +31,48 @@ const App: React.FC = () => {
   }, []);
 
   const fetchRoom = async (code: string) => {
-    const { data, error } = await supabase
-      .from('rooms')
-      .select('data')
-      .eq('code', code.toUpperCase())
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('rooms')
+        .select('data')
+        .eq('code', code.toUpperCase())
+        .maybeSingle();
 
-    if (data) {
-      const roomData = data.data as GameRoom;
-      setRoom(roomData);
-      roomRef.current = roomData;
-      return roomData;
+      if (data && data.data) {
+        const roomData = data.data as GameRoom;
+        setRoom(roomData);
+        roomRef.current = roomData;
+        return roomData;
+      }
+    } catch (e) {
+      console.error("Fetch error:", e);
     }
     return null;
   };
 
-  // Abonnement Realtime amélioré
+  // Abonnement Realtime Ultra-Robuste
   useEffect(() => {
     const channel = supabase
-      .channel('schema-db-changes')
+      .channel('public:rooms')
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'rooms' },
+        { event: '*', schema: 'public', table: 'rooms' },
         (payload) => {
-          if (payload.new && payload.new.code === ROOM_CODE) {
-            const newData = payload.new.data as GameRoom;
-            setRoom(newData);
-            roomRef.current = newData;
+          // On vérifie si la ligne modifiée correspond à notre salon
+          if (payload.new && (payload.new as any).code === ROOM_CODE) {
+            const newData = (payload.new as any).data as GameRoom;
+            if (newData) {
+              setRoom(newData);
+              roomRef.current = newData;
+            }
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log("Realtime connected for mobile sync");
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -69,19 +80,15 @@ const App: React.FC = () => {
   }, []);
 
   const saveRoomState = async (nextRoom: GameRoom) => {
-    // On met à jour localement immédiatement pour la réactivité
     setRoom(nextRoom);
     roomRef.current = nextRoom;
 
-    // Persistance Supabase
     const { error } = await supabase
       .from('rooms')
       .update({ data: nextRoom })
       .eq('code', nextRoom.code);
 
-    if (error) {
-      console.error("Erreur de sauvegarde base de données:", error);
-    }
+    if (error) console.error("Update error:", error);
   };
 
   const handleLogout = useCallback(() => {
@@ -95,16 +102,15 @@ const App: React.FC = () => {
     setLoading(true);
     const code = ROOM_CODE;
     
-    // Vérifier si un salon existe déjà pour ne pas écraser une partie en cours par erreur
+    // On essaie de récupérer l'existant
     const existingRoom = await fetchRoom(code);
-    
     const hostId = "host-" + Math.random().toString(36).substr(2, 9);
     const host: User = { id: hostId, nickname, team: Team.NONE, isCaptain: false, isHost: true, score: 0 };
     
     let newRoom: GameRoom;
 
     if (existingRoom) {
-      // On garde les questions et l'état actuel mais on change l'hôte
+      // On reset juste l'hôte pour la nouvelle session admin
       newRoom = { ...existingRoom, hostId, users: [host] };
     } else {
       const freshQuestions = JSON.parse(JSON.stringify(INITIAL_QUESTIONS)).map((q: Question) => ({
@@ -129,7 +135,7 @@ const App: React.FC = () => {
       localStorage.setItem(SESSION_KEY, JSON.stringify(host));
       SoundService.play('tada');
     } else {
-      setError("Erreur lors de la création du salon.");
+      setError("Erreur technique. Vérifiez votre connexion.");
     }
     setLoading(false);
   };
@@ -139,7 +145,7 @@ const App: React.FC = () => {
     const currentRoom = await fetchRoom(code);
 
     if (!currentRoom) {
-      setError("Le salon n'existe pas. L'animateur doit d'abord le créer.");
+      setError("Le salon DZ-OR n'est pas actif. Demandez à l'animateur.");
       setLoading(false);
       return;
     }
@@ -159,8 +165,6 @@ const App: React.FC = () => {
 
   const handleAction = useCallback(async (type: string, payload: any) => {
     if (!roomRef.current) return;
-    
-    // Si on est en pause, on ne permet que de reprendre
     if (isPaused && type !== 'RESUME') return;
 
     let next = JSON.parse(JSON.stringify(roomRef.current)) as GameRoom;
@@ -195,7 +199,7 @@ const App: React.FC = () => {
         next.diceResults[payload.rollerId] = payload.value;
         SoundService.play('dice_roll');
         const captains = next.users.filter(u => u.isCaptain && u.team !== Team.NONE);
-        if (captains.every(c => next.diceResults[c.id])) {
+        if (captains.length >= 2 && captains.every(c => next.diceResults[c.id])) {
           const resA = next.diceResults[captains.find(c => c.team === Team.A)?.id || ''];
           const resB = next.diceResults[captains.find(c => c.team === Team.B)?.id || ''];
           if (resA && resB && resA !== resB) next.activeTeam = resA > resB ? Team.A : Team.B;
@@ -220,9 +224,7 @@ const App: React.FC = () => {
       case 'ADD_STRIKE':
         next.strikes = Math.min(3, next.strikes + 1);
         SoundService.play('buzzer');
-        if (next.strikes === 3) {
-           next.state = GameState.STEAL;
-        }
+        if (next.strikes === 3) next.state = GameState.STEAL;
         break;
       case 'END_ROUND':
         if (payload.winnerTeam === Team.A) next.teamAScore += next.roundScore;
@@ -253,7 +255,7 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-yellow-500">
       <div className="w-16 h-16 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-      <p className="font-game text-2xl animate-pulse">SYNCHRONISATION DZ...</p>
+      <p className="font-game text-2xl animate-pulse tracking-widest uppercase">Sync DZ en cours...</p>
     </div>
   );
 
@@ -261,12 +263,11 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col md:flex-row overflow-hidden">
-      {/* Sidebar Admin */}
       <div className={`md:w-1/3 lg:w-1/4 bg-slate-950 border-r border-slate-800 p-4 overflow-y-auto ${user.isHost ? 'block' : 'hidden md:block'}`}>
         {user.isHost ? (
           <AdminPanel room={room} onAction={handleAction} isPaused={isPaused} onTogglePause={() => setIsPaused(!isPaused)} onLogout={handleLogout} />
         ) : (
-          <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-4 shadow-xl">
+          <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-4">
             <div className="flex justify-between items-center">
               <span className="text-yellow-500 font-game text-xl tracking-widest uppercase">Mon Profil</span>
               <button onClick={handleLogout} className="text-red-500 hover:text-red-400 p-2"><i className="fas fa-power-off"></i></button>
@@ -275,7 +276,7 @@ const App: React.FC = () => {
               <p className="text-white font-bold text-lg">{user.nickname}</p>
               <div className="flex items-center gap-2">
                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                 <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest">Connecté au Salon {room.code}</p>
+                 <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest">Connecté • Salon DZ-OR</p>
               </div>
             </div>
             {user.team !== Team.NONE && (
@@ -287,8 +288,7 @@ const App: React.FC = () => {
         )}
       </div>
 
-      {/* Game Content */}
-      <div className="flex-1 p-2 md:p-8 flex flex-col items-center overflow-y-auto">
+      <div className="flex-1 p-2 md:p-8 flex flex-col items-center overflow-y-auto scrollbar-hide">
         <GameBoard room={room} user={user} onRoll={(v) => handleAction('ROLL_DICE', { rollerId: user.id, value: v })} onLogout={handleLogout} />
       </div>
     </div>

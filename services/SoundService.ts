@@ -3,23 +3,26 @@ class SoundService {
   private sounds: { [key: string]: HTMLAudioElement } = {};
 
   constructor() {
-    // In a real app, these URLs would point to actual mp3 files
-    // Using placeholder logic as we cannot host assets directly in this XML
     this.init();
   }
 
   private init() {
+    // Utilisation de sons provenant d'un CDN stable (Open Source / Free Assets)
     const soundUrls: { [key: string]: string } = {
-      ding: 'https://cdn.pixabay.com/audio/2022/03/10/audio_c36394336c.mp3', // Example ding
-      buzzer: 'https://cdn.pixabay.com/audio/2022/03/24/audio_7315570216.mp3', // Example buzzer
-      tada: 'https://cdn.pixabay.com/audio/2021/08/04/audio_bb361ed77c.mp3', // Example fanfare
-      dice_roll: 'https://cdn.pixabay.com/audio/2022/03/15/audio_277f24097f.mp3', // Example dice
+      ding: 'https://actions.google.com/sounds/v1/alarms/beep_short.ogg',
+      buzzer: 'https://actions.google.com/sounds/v1/cartoon/boing.ogg',
+      tada: 'https://actions.google.com/sounds/v1/ambiences/fanfare.ogg',
+      dice_roll: 'https://actions.google.com/sounds/v1/foley/rattle_keys.ogg',
     };
 
     Object.entries(soundUrls).forEach(([key, url]) => {
-      const audio = new Audio(url);
-      audio.load();
-      this.sounds[key] = audio;
+      try {
+        const audio = new Audio(url);
+        audio.preload = 'auto';
+        this.sounds[key] = audio;
+      } catch (e) {
+        console.error(`Failed to init sound: ${key}`, e);
+      }
     });
   }
 
@@ -27,7 +30,10 @@ class SoundService {
     const sound = this.sounds[soundName];
     if (sound) {
       sound.currentTime = 0;
-      sound.play().catch(e => console.warn("Audio playback failed (interaction required):", e));
+      // On ignore l'erreur si l'utilisateur n'a pas encore interagi avec la page
+      sound.play().catch(() => {
+        // Silencieux : comportement normal du navigateur si pas d'interaction
+      });
     }
   }
 }
