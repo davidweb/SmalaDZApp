@@ -9,6 +9,7 @@ import SoundService from './services/SoundService';
 import { supabase } from './services/supabase';
 
 const SESSION_KEY = 'famille_dz_user_v3';
+const ROOM_CODE = "DZ-OR";
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -18,14 +19,14 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   
   const roomRef = useRef<GameRoom | null>(null);
-  const isUpdating = useRef(false);
 
+  // Charger l'utilisateur au démarrage
   useEffect(() => {
     const savedUser = localStorage.getItem(SESSION_KEY);
     if (savedUser) {
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser);
-      fetchRoom("DZ-OR");
+      fetchRoom(ROOM_CODE);
     }
   }, []);
 
@@ -37,22 +38,24 @@ const App: React.FC = () => {
       .single();
 
     if (data) {
-      setRoom(data.data);
-      roomRef.current = data.data;
-      return data.data;
+      const roomData = data.data as GameRoom;
+      setRoom(roomData);
+      roomRef.current = roomData;
+      return roomData;
     }
     return null;
   };
 
+  // Abonnement Realtime amélioré
   useEffect(() => {
     const channel = supabase
-      .channel('room-updates')
+      .channel('schema-db-changes')
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `code=eq.DZ-OR` },
+        { event: 'UPDATE', schema: 'public', table: 'rooms' },
         (payload) => {
-          const newData = payload.new.data as GameRoom;
-          if (!isUpdating.current) {
+          if (payload.new && payload.new.code === ROOM_CODE) {
+            const newData = payload.new.data as GameRoom;
             setRoom(newData);
             roomRef.current = newData;
           }
@@ -66,18 +69,19 @@ const App: React.FC = () => {
   }, []);
 
   const saveRoomState = async (nextRoom: GameRoom) => {
-    isUpdating.current = true;
+    // On met à jour localement immédiatement pour la réactivité
     setRoom(nextRoom);
     roomRef.current = nextRoom;
 
+    // Persistance Supabase
     const { error } = await supabase
       .from('rooms')
       .update({ data: nextRoom })
       .eq('code', nextRoom.code);
 
-    if (error) console.error("Update error:", error);
-    
-    setTimeout(() => { isUpdating.current = false; }, 100);
+    if (error) {
+      console.error("Erreur de sauvegarde base de données:", error);
+    }
   };
 
   const handleLogout = useCallback(() => {
@@ -89,19 +93,30 @@ const App: React.FC = () => {
 
   const createRoom = async (nickname: string) => {
     setLoading(true);
-    const code = "DZ-OR";
+    const code = ROOM_CODE;
+    
+    // Vérifier si un salon existe déjà pour ne pas écraser une partie en cours par erreur
+    const existingRoom = await fetchRoom(code);
+    
     const hostId = "host-" + Math.random().toString(36).substr(2, 9);
     const host: User = { id: hostId, nickname, team: Team.NONE, isCaptain: false, isHost: true, score: 0 };
-    const freshQuestions = JSON.parse(JSON.stringify(INITIAL_QUESTIONS)).map((q: Question) => ({
-      ...q,
-      answers: q.answers.map(a => ({ ...a, revealed: false }))
-    }));
+    
+    let newRoom: GameRoom;
 
-    const newRoom: GameRoom = {
-      code, state: GameState.LOBBY, hostId, teamAName: "Famille A", teamBName: "Famille B",
-      teamAScore: 0, teamBScore: 0, roundScore: 0, strikes: 0, currentQuestionId: 1,
-      activeTeam: Team.NONE, diceResults: {}, users: [host], activeQuestions: freshQuestions
-    };
+    if (existingRoom) {
+      // On garde les questions et l'état actuel mais on change l'hôte
+      newRoom = { ...existingRoom, hostId, users: [host] };
+    } else {
+      const freshQuestions = JSON.parse(JSON.stringify(INITIAL_QUESTIONS)).map((q: Question) => ({
+        ...q,
+        answers: q.answers.map(a => ({ ...a, revealed: false }))
+      }));
+      newRoom = {
+        code, state: GameState.LOBBY, hostId, teamAName: "Famille A", teamBName: "Famille B",
+        teamAScore: 0, teamBScore: 0, roundScore: 0, strikes: 0, currentQuestionId: 1,
+        activeTeam: Team.NONE, diceResults: {}, users: [host], activeQuestions: freshQuestions
+      };
+    }
 
     const { error } = await supabase
       .from('rooms')
@@ -124,7 +139,7 @@ const App: React.FC = () => {
     const currentRoom = await fetchRoom(code);
 
     if (!currentRoom) {
-      setError("Le salon n'existe pas ou n'est pas encore ouvert.");
+      setError("Le salon n'existe pas. L'animateur doit d'abord le créer.");
       setLoading(false);
       return;
     }
@@ -143,7 +158,11 @@ const App: React.FC = () => {
   };
 
   const handleAction = useCallback(async (type: string, payload: any) => {
-    if (!roomRef.current || isPaused) return;
+    if (!roomRef.current) return;
+    
+    // Si on est en pause, on ne permet que de reprendre
+    if (isPaused && type !== 'RESUME') return;
+
     let next = JSON.parse(JSON.stringify(roomRef.current)) as GameRoom;
 
     switch (type) {
@@ -166,6 +185,7 @@ const App: React.FC = () => {
         next.state = GameState.DUEL;
         next.diceResults = {};
         next.activeTeam = Team.NONE;
+        SoundService.play('tada');
         break;
       case 'SET_ACTIVE_TEAM':
         next.activeTeam = payload.team;
@@ -185,11 +205,13 @@ const App: React.FC = () => {
         next.state = GameState.ROUND;
         next.strikes = 0;
         next.roundScore = 0;
+        SoundService.play('ding');
         break;
       case 'REVEAL_ANSWER':
         const qIdx = next.activeQuestions.findIndex(q => q.id === next.currentQuestionId);
+        if (qIdx === -1) break;
         const aIdx = next.activeQuestions[qIdx].answers.findIndex(a => a.id === payload.answerId);
-        if (qIdx !== -1 && aIdx !== -1 && !next.activeQuestions[qIdx].answers[aIdx].revealed) {
+        if (aIdx !== -1 && !next.activeQuestions[qIdx].answers[aIdx].revealed) {
           next.activeQuestions[qIdx].answers[aIdx].revealed = true;
           next.roundScore += next.activeQuestions[qIdx].answers[aIdx].points;
           SoundService.play('ding');
@@ -198,7 +220,9 @@ const App: React.FC = () => {
       case 'ADD_STRIKE':
         next.strikes = Math.min(3, next.strikes + 1);
         SoundService.play('buzzer');
-        if (next.strikes === 3) next.state = GameState.STEAL;
+        if (next.strikes === 3) {
+           next.state = GameState.STEAL;
+        }
         break;
       case 'END_ROUND':
         if (payload.winnerTeam === Team.A) next.teamAScore += next.roundScore;
@@ -218,6 +242,9 @@ const App: React.FC = () => {
         }));
         next = { ...next, state: GameState.LOBBY, teamAScore: 0, teamBScore: 0, currentQuestionId: 1, activeQuestions: resetQuestions, diceResults: {}, strikes: 0, roundScore: 0 };
         break;
+      case 'DISCONNECT_USER':
+        next.users = next.users.filter(u => u.id !== payload.userId);
+        break;
     }
     
     await saveRoomState(next);
@@ -234,26 +261,34 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col md:flex-row overflow-hidden">
+      {/* Sidebar Admin */}
       <div className={`md:w-1/3 lg:w-1/4 bg-slate-950 border-r border-slate-800 p-4 overflow-y-auto ${user.isHost ? 'block' : 'hidden md:block'}`}>
         {user.isHost ? (
           <AdminPanel room={room} onAction={handleAction} isPaused={isPaused} onTogglePause={() => setIsPaused(!isPaused)} onLogout={handleLogout} />
         ) : (
-          <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-4">
+          <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-4 shadow-xl">
             <div className="flex justify-between items-center">
               <span className="text-yellow-500 font-game text-xl tracking-widest uppercase">Mon Profil</span>
-              <button onClick={handleLogout} className="text-red-500"><i className="fas fa-power-off"></i></button>
+              <button onClick={handleLogout} className="text-red-500 hover:text-red-400 p-2"><i className="fas fa-power-off"></i></button>
             </div>
             <div className="space-y-1">
               <p className="text-white font-bold text-lg">{user.nickname}</p>
               <div className="flex items-center gap-2">
                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                 <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest">Connecté au Live</p>
+                 <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest">Connecté au Salon {room.code}</p>
               </div>
             </div>
+            {user.team !== Team.NONE && (
+               <div className={`p-3 rounded-xl border-2 font-game text-center ${user.team === Team.A ? 'bg-green-600/20 border-green-500 text-green-500' : 'bg-red-600/20 border-red-500 text-red-500'}`}>
+                 FAMILLE {user.team}
+               </div>
+            )}
           </div>
         )}
       </div>
-      <div className="flex-1 p-4 md:p-8 flex flex-col items-center overflow-y-auto">
+
+      {/* Game Content */}
+      <div className="flex-1 p-2 md:p-8 flex flex-col items-center overflow-y-auto">
         <GameBoard room={room} user={user} onRoll={(v) => handleAction('ROLL_DICE', { rollerId: user.id, value: v })} onLogout={handleLogout} />
       </div>
     </div>
