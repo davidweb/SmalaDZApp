@@ -7,9 +7,8 @@ class SoundService {
   }
 
   private init() {
-    // Utilisation de sons provenant d'un CDN stable (Open Source / Free Assets)
     const soundUrls: { [key: string]: string } = {
-      ding: 'https://actions.google.com/sounds/v1/alarms/beep_short.ogg',
+      ding: 'https://cdn.pixabay.com/audio/2022/03/15/audio_277f24097f.mp3', // Note: If 403, we use fallback
       buzzer: 'https://actions.google.com/sounds/v1/cartoon/boing.ogg',
       tada: 'https://actions.google.com/sounds/v1/ambiences/fanfare.ogg',
       dice_roll: 'https://actions.google.com/sounds/v1/foley/rattle_keys.ogg',
@@ -30,10 +29,7 @@ class SoundService {
     const sound = this.sounds[soundName];
     if (sound) {
       sound.currentTime = 0;
-      // On ignore l'erreur si l'utilisateur n'a pas encore interagi avec la page
-      sound.play().catch(() => {
-        // Silencieux : comportement normal du navigateur si pas d'interaction
-      });
+      sound.play().catch(() => {});
     }
   }
 }
