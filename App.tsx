@@ -20,7 +20,7 @@ const App: React.FC = () => {
   
   const roomRef = useRef<GameRoom | null>(null);
 
-  // Charger l'utilisateur au démarrage
+  // Charger la session locale
   useEffect(() => {
     const savedUser = localStorage.getItem(SESSION_KEY);
     if (savedUser) {
@@ -31,68 +31,44 @@ const App: React.FC = () => {
   }, []);
 
   const fetchRoom = async (code: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('rooms')
-        .select('data')
-        .eq('code', code.toUpperCase())
-        .maybeSingle();
+    const { data } = await supabase
+      .from('rooms')
+      .select('data')
+      .eq('code', code.toUpperCase())
+      .maybeSingle();
 
-      if (data && data.data) {
-        const roomData = data.data as GameRoom;
-        setRoom(roomData);
-        roomRef.current = roomData;
-        return roomData;
-      }
-    } catch (e) {
-      console.error("Fetch error:", e);
+    if (data && data.data) {
+      setRoom(data.data);
+      roomRef.current = data.data;
+      return data.data;
     }
     return null;
   };
 
-  // Abonnement Realtime Ultra-Robuste
+  // Abonnement Realtime robuste
   useEffect(() => {
-    const channel = supabase
-      .channel('public:rooms')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms' },
-        (payload) => {
-          // On vérifie si la ligne modifiée correspond à notre salon
-          if (payload.new && (payload.new as any).code === ROOM_CODE) {
-            const newData = (payload.new as any).data as GameRoom;
-            if (newData) {
-              setRoom(newData);
-              roomRef.current = newData;
-            }
-          }
+    const subscription = supabase
+      .channel('any')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms' }, (payload) => {
+        if (payload.new && payload.new.code === ROOM_CODE) {
+          setRoom(payload.new.data);
+          roomRef.current = payload.new.data;
         }
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log("Realtime connected for mobile sync");
-        }
-      });
+      })
+      .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(subscription);
     };
   }, []);
 
   const saveRoomState = async (nextRoom: GameRoom) => {
     setRoom(nextRoom);
     roomRef.current = nextRoom;
-
-    const { error } = await supabase
-      .from('rooms')
-      .update({ data: nextRoom })
-      .eq('code', nextRoom.code);
-
-    if (error) console.error("Update error:", error);
+    await supabase.from('rooms').update({ data: nextRoom }).eq('code', ROOM_CODE);
   };
 
   const handleLogout = useCallback(() => {
-    if (!window.confirm("Quitter la partie ?")) return;
     localStorage.removeItem(SESSION_KEY);
     setUser(null);
     setRoom(null);
@@ -100,124 +76,67 @@ const App: React.FC = () => {
 
   const createRoom = async (nickname: string) => {
     setLoading(true);
-    const code = ROOM_CODE;
-    
-    // On essaie de récupérer l'existant
-    const existingRoom = await fetchRoom(code);
     const hostId = "host-" + Math.random().toString(36).substr(2, 9);
     const host: User = { id: hostId, nickname, team: Team.NONE, isCaptain: false, isHost: true, score: 0 };
     
+    const existing = await fetchRoom(ROOM_CODE);
     let newRoom: GameRoom;
 
-    if (existingRoom) {
-      // On reset juste l'hôte pour la nouvelle session admin
-      newRoom = { ...existingRoom, hostId, users: [host] };
+    if (existing) {
+      newRoom = { ...existing, hostId, users: [host] };
     } else {
-      const freshQuestions = JSON.parse(JSON.stringify(INITIAL_QUESTIONS)).map((q: Question) => ({
-        ...q,
-        answers: q.answers.map(a => ({ ...a, revealed: false }))
-      }));
       newRoom = {
-        code, state: GameState.LOBBY, hostId, teamAName: "Famille A", teamBName: "Famille B",
+        code: ROOM_CODE, state: GameState.LOBBY, hostId, teamAName: "Famille A", teamBName: "Famille B",
         teamAScore: 0, teamBScore: 0, roundScore: 0, strikes: 0, currentQuestionId: 1,
-        activeTeam: Team.NONE, diceResults: {}, users: [host], activeQuestions: freshQuestions
+        activeTeam: Team.NONE, diceResults: {}, users: [host], activeQuestions: INITIAL_QUESTIONS
       };
     }
 
-    const { error } = await supabase
-      .from('rooms')
-      .upsert({ code, data: newRoom }, { onConflict: 'code' });
-
-    if (!error) {
-      setUser(host);
-      setRoom(newRoom);
-      roomRef.current = newRoom;
-      localStorage.setItem(SESSION_KEY, JSON.stringify(host));
-      SoundService.play('tada');
-    } else {
-      setError("Erreur technique. Vérifiez votre connexion.");
-    }
+    await supabase.from('rooms').upsert({ code: ROOM_CODE, data: newRoom });
+    setUser(host);
+    setRoom(newRoom);
+    localStorage.setItem(SESSION_KEY, JSON.stringify(host));
     setLoading(false);
   };
 
   const joinRoom = async (nickname: string, code: string) => {
     setLoading(true);
-    const currentRoom = await fetchRoom(code);
-
-    if (!currentRoom) {
-      setError("Le salon DZ-OR n'est pas actif. Demandez à l'animateur.");
+    const current = await fetchRoom(code);
+    if (!current) {
+      setError("Salon non trouvé.");
       setLoading(false);
       return;
     }
-
-    const newUser: User = { 
-      id: "user-" + Math.random().toString(36).substr(2, 9), 
-      nickname, team: Team.NONE, isCaptain: false, isHost: false, score: 0 
-    };
-    
-    const updatedRoom = { ...currentRoom, users: [...currentRoom.users, newUser] };
-    await saveRoomState(updatedRoom);
+    const newUser: User = { id: "u-" + Math.random().toString(36).substr(2, 9), nickname, team: Team.NONE, isCaptain: false, isHost: false, score: 0 };
+    const updated = { ...current, users: [...current.users, newUser] };
+    await saveRoomState(updated);
     setUser(newUser);
     localStorage.setItem(SESSION_KEY, JSON.stringify(newUser));
-    setError(null);
     setLoading(false);
   };
 
   const handleAction = useCallback(async (type: string, payload: any) => {
-    if (!roomRef.current) return;
-    if (isPaused && type !== 'RESUME') return;
-
+    if (!roomRef.current || (isPaused && type !== 'RESUME')) return;
     let next = JSON.parse(JSON.stringify(roomRef.current)) as GameRoom;
 
     switch (type) {
-      case 'LOAD_CUSTOM_QUIZ':
-        next.activeQuestions = payload.questions;
-        next.currentQuestionId = 1;
-        next.teamAScore = 0;
-        next.teamBScore = 0;
-        next.roundScore = 0;
-        next.strikes = 0;
-        next.state = GameState.LOBBY;
-        next.diceResults = {};
-        next.activeTeam = Team.NONE;
-        SoundService.play('tada');
-        break;
       case 'JOIN_TEAM':
-        next.users = next.users.map(u => u.id === payload.userId ? { ...u, team: payload.team, isCaptain: payload.isCaptain ?? u.isCaptain } : u);
+        next.users = next.users.map(u => u.id === payload.userId ? { ...u, team: payload.team } : u);
         break;
       case 'START_DUEL':
         next.state = GameState.DUEL;
         next.diceResults = {};
-        next.activeTeam = Team.NONE;
-        SoundService.play('tada');
-        break;
-      case 'SET_ACTIVE_TEAM':
-        next.activeTeam = payload.team;
-        SoundService.play('ding');
-        break;
-      case 'ROLL_DICE':
-        next.diceResults[payload.rollerId] = payload.value;
-        SoundService.play('dice_roll');
-        const captains = next.users.filter(u => u.isCaptain && u.team !== Team.NONE);
-        if (captains.length >= 2 && captains.every(c => next.diceResults[c.id])) {
-          const resA = next.diceResults[captains.find(c => c.team === Team.A)?.id || ''];
-          const resB = next.diceResults[captains.find(c => c.team === Team.B)?.id || ''];
-          if (resA && resB && resA !== resB) next.activeTeam = resA > resB ? Team.A : Team.B;
-        }
         break;
       case 'START_ROUND':
         next.state = GameState.ROUND;
         next.strikes = 0;
-        next.roundScore = 0;
-        SoundService.play('ding');
         break;
       case 'REVEAL_ANSWER':
-        const qIdx = next.activeQuestions.findIndex(q => q.id === next.currentQuestionId);
-        if (qIdx === -1) break;
-        const aIdx = next.activeQuestions[qIdx].answers.findIndex(a => a.id === payload.answerId);
-        if (aIdx !== -1 && !next.activeQuestions[qIdx].answers[aIdx].revealed) {
-          next.activeQuestions[qIdx].answers[aIdx].revealed = true;
-          next.roundScore += next.activeQuestions[qIdx].answers[aIdx].points;
+        const q = next.activeQuestions.find(q => q.id === next.currentQuestionId);
+        const a = q?.answers.find(ans => ans.id === payload.answerId);
+        if (a && !a.revealed) {
+          a.revealed = true;
+          next.roundScore += a.points;
           SoundService.play('ding');
         }
         break;
@@ -233,62 +152,34 @@ const App: React.FC = () => {
         next.currentQuestionId++;
         next.roundScore = 0;
         next.strikes = 0;
-        next.activeTeam = Team.NONE;
-        if (next.currentQuestionId > next.activeQuestions.length) next.state = GameState.FINISHED;
-        SoundService.play('tada');
         break;
       case 'RESET_GAME':
-        const resetQuestions = next.activeQuestions.map((q: Question) => ({
-          ...q,
-          answers: q.answers.map(a => ({ ...a, revealed: false }))
-        }));
-        next = { ...next, state: GameState.LOBBY, teamAScore: 0, teamBScore: 0, currentQuestionId: 1, activeQuestions: resetQuestions, diceResults: {}, strikes: 0, roundScore: 0 };
-        break;
-      case 'DISCONNECT_USER':
-        next.users = next.users.filter(u => u.id !== payload.userId);
+        next.teamAScore = 0;
+        next.teamBScore = 0;
+        next.currentQuestionId = 1;
+        next.state = GameState.LOBBY;
         break;
     }
-    
     await saveRoomState(next);
   }, [isPaused]);
 
-  if (loading) return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-yellow-500">
-      <div className="w-16 h-16 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-      <p className="font-game text-2xl animate-pulse tracking-widest uppercase">Sync DZ en cours...</p>
-    </div>
-  );
-
+  if (loading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-yellow-500 font-game text-3xl">CHARGEMENT...</div>;
   if (!user || !room) return <Lobby onJoin={joinRoom} onCreate={createRoom} error={error} />;
 
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col md:flex-row overflow-hidden">
-      <div className={`md:w-1/3 lg:w-1/4 bg-slate-950 border-r border-slate-800 p-4 overflow-y-auto ${user.isHost ? 'block' : 'hidden md:block'}`}>
+    <div className="min-h-screen bg-slate-900 flex flex-col md:flex-row">
+      <div className={`md:w-1/4 bg-slate-950 p-4 border-r border-slate-800 ${user.isHost ? '' : 'hidden md:block'}`}>
         {user.isHost ? (
           <AdminPanel room={room} onAction={handleAction} isPaused={isPaused} onTogglePause={() => setIsPaused(!isPaused)} onLogout={handleLogout} />
         ) : (
-          <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-4">
-            <div className="flex justify-between items-center">
-              <span className="text-yellow-500 font-game text-xl tracking-widest uppercase">Mon Profil</span>
-              <button onClick={handleLogout} className="text-red-500 hover:text-red-400 p-2"><i className="fas fa-power-off"></i></button>
-            </div>
-            <div className="space-y-1">
-              <p className="text-white font-bold text-lg">{user.nickname}</p>
-              <div className="flex items-center gap-2">
-                 <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                 <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest">Connecté • Salon DZ-OR</p>
-              </div>
-            </div>
-            {user.team !== Team.NONE && (
-               <div className={`p-3 rounded-xl border-2 font-game text-center ${user.team === Team.A ? 'bg-green-600/20 border-green-500 text-green-500' : 'bg-red-600/20 border-red-500 text-red-500'}`}>
-                 FAMILLE {user.team}
-               </div>
-            )}
+          <div className="text-white">
+            <h2 className="font-game text-xl text-yellow-500 mb-4">PROFIL</h2>
+            <p className="font-bold">{user.nickname}</p>
+            <p className="text-xs text-slate-500 uppercase">Connecté au salon DZ-OR</p>
           </div>
         )}
       </div>
-
-      <div className="flex-1 p-2 md:p-8 flex flex-col items-center overflow-y-auto scrollbar-hide">
+      <div className="flex-1 p-4 overflow-y-auto">
         <GameBoard room={room} user={user} onRoll={(v) => handleAction('ROLL_DICE', { rollerId: user.id, value: v })} onLogout={handleLogout} />
       </div>
     </div>
