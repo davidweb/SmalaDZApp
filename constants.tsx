@@ -12,21 +12,26 @@ export interface Question {
 }
 
 export interface Player {
+  id: string;
   name: string;
   team: 'A' | 'B' | 'SPECTATOR';
-  captain: boolean;
+  isCaptain: boolean;
+  stats: { correctAnswers: number };
 }
 
 export interface GameState {
   code: string;
-  status: 'LOBBY' | 'GAME' | 'RESULTS';
+  status: 'LOBBY' | 'DUEL' | 'ROUND' | 'STEAL' | 'FINISHED';
   scores: { A: number; B: number };
+  roundPoints: number;
   strikes: number;
   currentQuestionIndex: number;
-  revealedAnswers: number[];
+  revealedAnswers: number[]; // indices
   timerEndsAt: number | null;
   activeTeam: 'A' | 'B' | null;
+  originalTeam: 'A' | 'B' | null; // The team that started the round before a steal
   players: Player[];
+  dice: { A: number | null; B: number | null };
 }
 
 export const QUESTIONS: Question[] = [

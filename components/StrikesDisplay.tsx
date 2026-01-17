@@ -1,5 +1,6 @@
 
 import React, { useEffect, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface StrikesDisplayProps {
   count: number;
@@ -16,18 +17,31 @@ const StrikesDisplay: React.FC<StrikesDisplayProps> = ({ count }) => {
     }
   }, [count]);
 
-  if (!show) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none bg-black/20 backdrop-blur-sm">
-      <div className="flex space-x-8 animate-bounce">
-        {Array.from({ length: count }).map((_, i) => (
-          <div key={i} className="text-[150px] md:text-[250px] font-black text-red-600 drop-shadow-[0_10px_10px_rgba(0,0,0,0.8)]">
-            X
-          </div>
-        ))}
-      </div>
-    </div>
+    <AnimatePresence>
+      {show && (
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.5 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 1.5 }}
+          className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none bg-red-600/10 backdrop-blur-[2px]"
+        >
+          <motion.div 
+            animate={{ 
+              x: [0, -20, 20, -20, 20, 0],
+              transition: { duration: 0.4 } 
+            }}
+            className="flex space-x-8"
+          >
+            {Array.from({ length: count }).map((_, i) => (
+              <div key={i} className="text-[120px] md:text-[220px] font-black text-red-600 drop-shadow-[0_10px_10px_rgba(0,0,0,0.9)]">
+                X
+              </div>
+            ))}
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
 
