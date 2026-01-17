@@ -31,7 +31,7 @@ const App: React.FC = () => {
 
   const fetchRoom = async (code: string) => {
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('rooms')
         .select('data')
         .eq('code', code.toUpperCase())
@@ -51,19 +51,25 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const channel = supabase
-      .channel('rooms_realtime')
+      .channel('public:rooms')
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'rooms' },
         (payload) => {
-          if (payload.new && payload.new.code === ROOM_CODE) {
-            const newData = payload.new.data as GameRoom;
-            setRoom(newData);
-            roomRef.current = newData;
+          if (payload.new && (payload.new as any).code === ROOM_CODE) {
+            const newData = (payload.new as any).data as GameRoom;
+            if (newData) {
+              setRoom(newData);
+              roomRef.current = newData;
+            }
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log("Realtime connected for mobile sync");
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -73,10 +79,13 @@ const App: React.FC = () => {
   const saveRoomState = async (nextRoom: GameRoom) => {
     setRoom(nextRoom);
     roomRef.current = nextRoom;
-    await supabase
+
+    const { error } = await supabase
       .from('rooms')
       .update({ data: nextRoom })
       .eq('code', ROOM_CODE);
+
+    if (error) console.error("Update error:", error);
   };
 
   const handleLogout = useCallback(() => {
@@ -88,53 +97,63 @@ const App: React.FC = () => {
 
   const createRoom = async (nickname: string) => {
     setLoading(true);
+    const code = ROOM_CODE;
+    const existingRoom = await fetchRoom(code);
     const hostId = "host-" + Math.random().toString(36).substr(2, 9);
     const host: User = { id: hostId, nickname, team: Team.NONE, isCaptain: false, isHost: true, score: 0 };
     
-    const existing = await fetchRoom(ROOM_CODE);
     let newRoom: GameRoom;
 
-    if (existing) {
-      newRoom = { ...existing, hostId, users: [host] };
+    if (existingRoom) {
+      newRoom = { ...existingRoom, hostId, users: [host] };
     } else {
       const freshQuestions = JSON.parse(JSON.stringify(INITIAL_QUESTIONS)).map((q: Question) => ({
         ...q,
         answers: q.answers.map(a => ({ ...a, revealed: false }))
       }));
       newRoom = {
-        code: ROOM_CODE, state: GameState.LOBBY, hostId, teamAName: "Famille A", teamBName: "Famille B",
+        code, state: GameState.LOBBY, hostId, teamAName: "Famille A", teamBName: "Famille B",
         teamAScore: 0, teamBScore: 0, roundScore: 0, strikes: 0, currentQuestionId: 1,
         activeTeam: Team.NONE, diceResults: {}, users: [host], activeQuestions: freshQuestions
       };
     }
 
-    await supabase.from('rooms').upsert({ code: ROOM_CODE, data: newRoom });
-    setUser(host);
-    setRoom(newRoom);
-    roomRef.current = newRoom;
-    localStorage.setItem(SESSION_KEY, JSON.stringify(host));
+    const { error } = await supabase
+      .from('rooms')
+      .upsert({ code, data: newRoom }, { onConflict: 'code' });
+
+    if (!error) {
+      setUser(host);
+      setRoom(newRoom);
+      roomRef.current = newRoom;
+      localStorage.setItem(SESSION_KEY, JSON.stringify(host));
+      SoundService.play('tada');
+    } else {
+      setError("Erreur technique de base de données.");
+    }
     setLoading(false);
   };
 
   const joinRoom = async (nickname: string, code: string) => {
     setLoading(true);
-    const current = await fetchRoom(code);
+    const currentRoom = await fetchRoom(code);
 
-    if (!current) {
-      setError("Le salon n'existe pas encore.");
+    if (!currentRoom) {
+      setError("Le salon DZ-OR n'est pas actif. Demandez à l'animateur.");
       setLoading(false);
       return;
     }
 
     const newUser: User = { 
-      id: "u-" + Math.random().toString(36).substr(2, 9), 
+      id: "user-" + Math.random().toString(36).substr(2, 9), 
       nickname, team: Team.NONE, isCaptain: false, isHost: false, score: 0 
     };
     
-    const updated = { ...current, users: [...current.users, newUser] };
-    await saveRoomState(updated);
+    const updatedRoom = { ...currentRoom, users: [...currentRoom.users, newUser] };
+    await saveRoomState(updatedRoom);
     setUser(newUser);
     localStorage.setItem(SESSION_KEY, JSON.stringify(newUser));
+    setError(null);
     setLoading(false);
   };
 
@@ -230,7 +249,7 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-yellow-500">
       <div className="w-16 h-16 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-      <p className="font-game text-2xl animate-pulse tracking-widest">SYNCHRONISATION...</p>
+      <p className="font-game text-2xl animate-pulse tracking-widest uppercase">Sync DZ en cours...</p>
     </div>
   );
 
@@ -238,24 +257,24 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col md:flex-row overflow-hidden">
-      <div className={`md:w-1/4 bg-slate-950 border-r border-slate-800 p-4 overflow-y-auto ${user.isHost ? 'block' : 'hidden md:block'}`}>
+      <div className={`md:w-1/3 lg:w-1/4 bg-slate-950 border-r border-slate-800 p-4 overflow-y-auto ${user.isHost ? 'block' : 'hidden md:block'}`}>
         {user.isHost ? (
           <AdminPanel room={room} onAction={handleAction} isPaused={isPaused} onTogglePause={() => setIsPaused(!isPaused)} onLogout={handleLogout} />
         ) : (
-          <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-4 shadow-xl">
+          <div className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-4 shadow-2xl">
             <div className="flex justify-between items-center">
-              <span className="text-yellow-500 font-game text-xl tracking-widest uppercase">Profil</span>
-              <button onClick={handleLogout} className="text-red-500 hover:text-red-400 p-2"><i className="fas fa-power-off"></i></button>
+              <span className="text-yellow-500 font-game text-xl tracking-widest uppercase">Mon Profil</span>
+              <button onClick={handleLogout} className="text-red-500 hover:text-red-400 p-2 transition-colors"><i className="fas fa-power-off"></i></button>
             </div>
             <div className="space-y-1">
               <p className="text-white font-bold text-lg">{user.nickname}</p>
               <div className="flex items-center gap-2">
                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                 <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest tracking-widest">Salon DZ-OR</p>
+                 <p className="text-slate-500 text-[10px] uppercase font-black tracking-widest">Connecté • Salon DZ-OR</p>
               </div>
             </div>
             {user.team !== Team.NONE && (
-               <div className={`p-3 rounded-xl border-2 font-game text-center ${user.team === Team.A ? 'bg-green-600/20 border-green-500 text-green-500' : 'bg-red-600/20 border-red-500 text-red-500'}`}>
+               <div className={`p-3 rounded-xl border-2 font-game text-center transition-all ${user.team === Team.A ? 'bg-green-600/20 border-green-500 text-green-500' : 'bg-red-600/20 border-red-500 text-red-500'}`}>
                  FAMILLE {user.team}
                </div>
             )}
@@ -263,7 +282,7 @@ const App: React.FC = () => {
         )}
       </div>
 
-      <div className="flex-1 p-2 md:p-8 flex flex-col items-center overflow-y-auto">
+      <div className="flex-1 p-2 md:p-8 flex flex-col items-center overflow-y-auto scrollbar-hide">
         <GameBoard room={room} user={user} onRoll={(v) => handleAction('ROLL_DICE', { rollerId: user.id, value: v })} onLogout={handleLogout} />
       </div>
     </div>
