@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogIn, Users, Crown, Settings, LogOut, Trash2, ArrowRight, Star, AlertTriangle } from 'lucide-react';
+import { LogIn, Users, Crown, Settings, LogOut, Trash2, ArrowRight, Star, AlertTriangle, RefreshCw } from 'lucide-react';
 import { supabase } from './services/supabaseClient';
 import { Room, Player, Question, Team } from './types';
 import Board from './components/Board';
@@ -28,20 +28,21 @@ const App: React.FC = () => {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
     
+    // On vérifie si les variables existent et si le client a pu s'initialiser
     if (url && key && supabase) {
       setIsConfigured(true);
     } else {
-      console.warn("Supabase non configuré ou mal initialisé.");
+      console.warn("Supabase non configuré ou clés manquantes.");
       setIsConfigured(false);
     }
   }, []);
 
   // Chargement des questions initiales
   useEffect(() => {
-    if (isConfigured === true) {
+    if (isConfigured === true && supabase) {
       const fetchInitialData = async () => {
         try {
-          const { data: qData } = await supabase!.from('questions').select('*');
+          const { data: qData } = await supabase.from('questions').select('*');
           if (qData) setQuestions(qData);
         } catch (e) {
           console.error("Erreur chargement questions:", e);
@@ -83,7 +84,7 @@ const App: React.FC = () => {
       .subscribe();
 
     const fetchRoom = async () => {
-      const { data } = await supabase!.from('rooms').select('*').eq('code', cleanCode).single();
+      const { data } = await supabase.from('rooms').select('*').eq('code', cleanCode).single();
       if (data) {
         setRoom(data);
         if (data.current_round_question_id) {
@@ -94,7 +95,7 @@ const App: React.FC = () => {
     };
 
     const fetchPlayers = async () => {
-      const { data } = await supabase!.from('players').select('*').eq('room_code', cleanCode);
+      const { data } = await supabase.from('players').select('*').eq('room_code', cleanCode);
       if (data) setPlayers(data);
     };
 
@@ -102,8 +103,8 @@ const App: React.FC = () => {
     fetchPlayers();
 
     return () => {
-      supabase!.removeChannel(roomChannel);
-      supabase!.removeChannel(playersChannel);
+      supabase.removeChannel(roomChannel);
+      supabase.removeChannel(playersChannel);
     };
   }, [roomCode, questions, isConfigured]);
 
@@ -132,8 +133,9 @@ const App: React.FC = () => {
   };
 
   const createRoom = async () => {
+    if (!supabase) return;
     const code = `DZ-${Math.floor(10 + Math.random() * 90)}`;
-    const { data } = await supabase!.from('rooms').insert([{ code, status: 'LOBBY' }]).select().single();
+    const { data } = await supabase.from('rooms').insert([{ code, status: 'LOBBY' }]).select().single();
     if (data) {
       setRoomCode(code);
       setRoom(data);
@@ -141,12 +143,12 @@ const App: React.FC = () => {
   };
 
   const joinRoom = async () => {
-    if (!nickname || !roomCode) return;
+    if (!nickname || !roomCode || !supabase) return;
     const cleanCode = roomCode.toUpperCase().trim();
-    const { data: roomExists } = await supabase!.from('rooms').select('*').eq('code', cleanCode).single();
+    const { data: roomExists } = await supabase.from('rooms').select('*').eq('code', cleanCode).single();
     if (!roomExists) return alert("Salle introuvable");
 
-    const { data: player } = await supabase!.from('players').insert([
+    const { data: player } = await supabase.from('players').insert([
       { room_code: cleanCode, nickname, team: 'SPECTATOR' }
     ]).select().single();
 
@@ -158,8 +160,8 @@ const App: React.FC = () => {
   };
 
   const updateRoom = async (updates: Partial<Room>) => {
-    if (!roomCode) return;
-    await supabase!.from('rooms').update(updates).eq('code', roomCode.toUpperCase());
+    if (!roomCode || !supabase) return;
+    await supabase.from('rooms').update(updates).eq('code', roomCode.toUpperCase());
   };
 
   const setNextQuestion = async () => {
@@ -205,7 +207,8 @@ const App: React.FC = () => {
   };
 
   const movePlayer = async (playerId: string, team: Team) => {
-    await supabase!.from('players').update({ team }).eq('id', playerId);
+    if (!supabase) return;
+    await supabase.from('players').update({ team }).eq('id', playerId);
   };
 
   const startTimer = async (seconds: number) => {
@@ -218,20 +221,26 @@ const App: React.FC = () => {
   if (isConfigured === null) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-900">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-yellow-500"></div>
+        <RefreshCw className="animate-spin text-yellow-500" size={48} />
       </div>
     );
   }
 
   if (isConfigured === false) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-slate-900 text-white p-8">
-        <AlertTriangle size={64} className="text-yellow-500 mb-6" />
-        <h1 className="text-3xl font-anton mb-4 uppercase tracking-tighter">Configuration Requise</h1>
-        <p className="text-slate-400 text-center max-w-md mb-6">
-          Vérifiez vos variables d'environnement dans Vercel : <br/>
-          <code className="bg-black/40 p-2 rounded mt-2 block">NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY</code>
+      <div className="flex flex-col items-center justify-center min-h-screen bg-slate-900 text-white p-8 text-center">
+        <AlertTriangle size={80} className="text-yellow-500 mb-6 animate-pulse" />
+        <h1 className="text-4xl font-anton mb-4 uppercase tracking-tighter">Configuration Requise</h1>
+        <p className="text-slate-400 max-w-md mb-8 leading-relaxed">
+          Les clés Supabase n'ont pas été détectées ou sont incorrectes. <br/>
+          Assurez-vous d'avoir configuré <strong>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY</strong> dans Vercel et d'avoir <strong>redéployé</strong> le projet.
         </p>
+        <button 
+          onClick={() => window.location.reload()}
+          className="bg-white text-slate-900 px-8 py-3 rounded-full font-bold hover:bg-slate-200 transition-all flex items-center gap-2"
+        >
+          <RefreshCw size={18} /> Réessayer
+        </button>
       </div>
     );
   }
