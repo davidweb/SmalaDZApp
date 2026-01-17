@@ -1,0 +1,5 @@
+{
+  "name": "Famille DZ en Or",
+  "description": "A high-end, real-time interactive game show web app inspired by 'Family Feud' (Une Famille en Or), optimized for TikTok lives with Supabase Realtime synchronization.",
+  "requestFramePermissions": []
+}
