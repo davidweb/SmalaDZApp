@@ -1,0 +1,7 @@
+{
+  "name": "Famille DZ en Or",
+  "description": "A TV-show style game app inspired by Family Feud, featuring real-time synchronization via Vercel KV and a luxury oriental design.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
